@@ -414,6 +414,25 @@
     pointer-events:none;
     z-index:5;
   }
+
+  #ytframe{
+    position:fixed;
+    width:1px;
+    height:1px;
+    opacity:0;
+    pointer-events:none;
+    overflow:hidden;
+    left:-9999px;
+    top:-9999px;
+    z-index:-1;
+  }
+
+  #ytframe iframe{
+    width:1px !important;
+    height:1px !important;
+    opacity:0 !important;
+    pointer-events:none !important;
+  }
 </style>
 </head>
 <body>
@@ -431,7 +450,7 @@
       <span id="onlineCount">—</span>
       <span class="pill-full">&nbsp;online</span>
     </div>
-    <a class="pill pill-link" href="https://youtube.com/playlist?list=PL5o3IhqKHiwgeKLs4isiqon45TiEi27rb&si=scguODfhUrR1LDTa" target="_blank" rel="noopener">
+    <a class="pill pill-link" href="https://youtube.com/playlist?list=PLIFag9jFb1ag&si=ZgpdoYH0m1Egy4c0" target="_blank" rel="noopener">
       <span class="pill-full">YT Playlist</span><span aria-hidden="true">↗</span>
     </a>
   </div>
@@ -497,15 +516,20 @@
 
 <script>
 (function(){
-  
-  var PLAYLIST_ID = "PL31izwyhdvk9z7rVMnz40AuMC3pyoTzoV&si=b59F7CvuqZkosPvV";
+  var PLAYLIST_URL = 'https://youtube.com/playlist?list=PLIFag9jFb1ag&si=ZgpdoYH0m1Egy4c0';
+  var PLAYLIST_ID = (function(){
+    try {
+      return new URL(PLAYLIST_URL).searchParams.get('list') || 'PLIFag9jFb1ag';
+    } catch (e) {
+      return 'PLIFag9jFb1ag';
+    }
+  })();
 
   var scene = document.getElementById('scene');
   var intro = document.getElementById('intro');
   var introCard = document.getElementById('introCard');
   var dock = document.getElementById('dock');
   var platter = document.getElementById('platter');
-  var platterLabel = document.getElementById('platterLabel');
   var trackTitle = document.getElementById('trackTitle');
   var trackArtist = document.getElementById('trackArtist');
   var playBtn = document.getElementById('playBtn');
@@ -520,7 +544,6 @@
   var lcdTrack = document.getElementById('lcdTrack');
   var clockTime = document.getElementById('clockTime');
   var onlineCount = document.getElementById('onlineCount');
-  var ytframe = document.getElementById('ytframe');
 
   var ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
   var ICON_PAUSE = '<path d="M6 5h4v14H6zm8 0h4v14h-4z"/>';
@@ -530,89 +553,68 @@
   var lastVol = 70;
   var started = false;
   var ready = false;
-  var curDuration = 0;
-  var lastVideoId = null;
-  var progressTimer = null;
   var player = null;
-  var playlistVideos = [];
+  var playerReady = false;
 
   function fmt(t){
-    t = Math.max(0, Math.floor(t||0));
-    var m = Math.floor(t/60), s = t%60;
-    return m + ':' + (s<10 ? '0'+s : s);
+    t = Math.max(0, Math.floor(t || 0));
+    var m = Math.floor(t / 60), s = t % 60;
+    return m + ':' + (s < 10 ? '0' + s : s);
   }
-  function pad2(n){ return n<10 ? '0'+n : ''+n; }
 
-  /* ---------- clock ---------- */
+  function pad2(n){ return n < 10 ? '0' + n : '' + n; }
+
   function updateClock(){
-    var s = new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+    var s = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     clockTime.textContent = s.toLowerCase();
   }
   updateClock();
   setInterval(updateClock, 15000);
 
-  /* ---------- ambient "online" count ----------
-     No backend in this static file, so this is a gently
-     drifting ambient number rather than real cross-visitor
-     presence — wire up Supabase Realtime Presence if you want
-     an actually-live count. */
-  var onlineN = 14 + Math.floor(Math.random()*20);
+  var onlineN = 14 + Math.floor(Math.random() * 20);
   onlineCount.textContent = onlineN;
   setInterval(function(){
     onlineN += (Math.random() < 0.5 ? -1 : 1);
     onlineN = Math.max(6, Math.min(54, onlineN));
     onlineCount.textContent = onlineN;
-  }, 9000 + Math.random()*6000);
+  }, 9000 + Math.random() * 6000);
 
-  /* ---------- parallax (desktop only, respects reduced motion) ---------- */
   var canParallax = window.matchMedia('(pointer:fine)').matches &&
                      !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (canParallax){
     window.addEventListener('mousemove', function(e){
       var x = (e.clientX / window.innerWidth - 0.5) * 2;
       var y = (e.clientY / window.innerHeight - 0.5) * 2;
-      scene.style.transform = 'translate(' + (x*-8) + 'px,' + (y*-5) + 'px) scale(1.03)';
+      scene.style.transform = 'translate(' + (x * -8) + 'px,' + (y * -5) + 'px) scale(1.03)';
     });
   }
 
-  /* ---------- YouTube Player API (no iframe embed) ---------- */
-  // Load YouTube IFrame API
-  var tag = document.createElement('script');
-  tag.src = "https://www.youtube.com/iframe_api";
-  var firstScriptTag = document.getElementsByTagName('script')[0];
-  firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+  function updateVideoData(){
+    if (!player || !playerReady) return;
 
-  var playerReady = false;
-  var currentVideoIndex = 0;
-
-  // YouTube API callback - when API is ready
-  window.onYouTubeIframeAPIReady = function() {
-    player = new YT.Player('ytframe', {
-      height: '220',
-      width: '100%',
-      events: {
-        'onReady': onPlayerReady,
-        'onStateChange': onPlayerStateChange,
-        'onError': onPlayerError
-      },
-      playerVars: {
-        autoplay: 0,
-        controls: 1,
-        modestbranding: 1,
-        rel: 0,
-        iv_load_policy: 3,
-        playsinline: 1,
-        listType: 'playlist',
-        list: PLAYLIST_ID
+    var videoData = player.getVideoData && player.getVideoData();
+    if (videoData) {
+      if (videoData.title) {
+        trackTitle.textContent = videoData.title;
       }
-    });
-    playerReady = true;
-    loadPlaylist();
-  };
+      if (videoData.author) {
+        trackArtist.textContent = videoData.author;
+      }
+    }
+
+    var total = player.getPlaylist && player.getPlaylist().length ? player.getPlaylist().length : 0;
+    var index = typeof player.getPlaylistIndex === 'function' ? player.getPlaylistIndex() : 0;
+    if (total > 0) {
+      lcdTrack.textContent = pad2(index + 1) + '/' + pad2(total);
+    }
+  }
 
   function onPlayerReady(event) {
     ready = true;
+    playerReady = true;
     event.target.setVolume(70);
+    vol.value = 70;
+    updateVideoData();
   }
 
   function onPlayerStateChange(event) {
@@ -623,28 +625,14 @@
       playIcon.innerHTML = ICON_PLAY;
       platter.classList.remove('playing');
     } else if (event.data == YT.PlayerState.ENDED) {
-      nextTrack();
+      player.nextVideo();
     }
+
+    updateVideoData();
   }
 
   function onPlayerError(event) {
     console.error('YouTube player error:', event.data);
-  }
-
-  function loadPlaylist() {
-    // YouTube playlist mode automatically handles sequential playback
-    // with the 'list' parameter in playerVars
-    trackTitle.textContent = 'Desi Hip Hop Playlist';
-    trackArtist.textContent = 'Playlist ready';
-    lcdTrack.textContent = '01/--';
-  }
-
-  function updateTrackInfo() {
-    if (playlistVideos.length === 0) return;
-    var video = playlistVideos[currentVideoIndex];
-    trackTitle.textContent = video.title;
-    trackArtist.textContent = video.artist;
-    lcdTrack.textContent = pad2(currentVideoIndex + 1) + '/' + pad2(playlistVideos.length);
   }
 
   function nextTrack() {
@@ -664,18 +652,42 @@
     started = true;
     intro.classList.add('hidden');
     dock.classList.add('show');
-    trackTitle.textContent = 'Desi Hip Hop Playlist';
-    trackArtist.textContent = 'Playlist ready';
-    lcdTrack.textContent = '01/01';
-    
+
     if (player && playerReady) {
       player.playVideo();
       playIcon.innerHTML = ICON_PAUSE;
       platter.classList.add('playing');
+      updateVideoData();
     }
   }
 
-  // Player controls
+  var tag = document.createElement('script');
+  tag.src = 'https://www.youtube.com/iframe_api';
+  var firstScriptTag = document.getElementsByTagName('script')[0];
+  firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+
+  window.onYouTubeIframeAPIReady = function() {
+    player = new YT.Player('ytframe', {
+      height: '1',
+      width: '1',
+      playerVars: {
+        autoplay: 0,
+        controls: 0,
+        modestbranding: 1,
+        rel: 0,
+        iv_load_policy: 3,
+        playsinline: 1,
+        listType: 'playlist',
+        list: PLAYLIST_ID
+      },
+      events: {
+        onReady: onPlayerReady,
+        onStateChange: onPlayerStateChange,
+        onError: onPlayerError
+      }
+    });
+  };
+
   playBtn.addEventListener('click', function(){
     if (!player || !playerReady) return;
     if (player.getPlayerState() === YT.PlayerState.PLAYING) {
@@ -690,7 +702,7 @@
 
   vol.addEventListener('input', function(){
     if (player && playerReady) {
-      player.setVolume(parseInt(this.value));
+      player.setVolume(parseInt(this.value, 10));
     }
   });
 
@@ -712,17 +724,16 @@
 
   seek.addEventListener('change', function(){
     if (!player || !playerReady) return;
-    var seekTime = (parseInt(this.value) / 100) * player.getDuration();
-    player.seekTo(seekTime);
+    var seekTime = (parseInt(this.value, 10) / 100) * player.getDuration();
+    player.seekTo(seekTime, true);
     isSeeking = false;
   });
 
-  // Update progress bar
   setInterval(function(){
     if (!player || !playerReady || isSeeking) return;
     var current = player.getCurrentTime();
     var duration = player.getDuration();
-    
+
     if (duration > 0) {
       seek.value = (current / duration) * 100;
       curTime.textContent = fmt(current);
@@ -730,14 +741,16 @@
     }
   }, 500);
 
-  // Initialize playlist info display
   trackTitle.textContent = 'Desi Hip Hop Playlist';
   trackArtist.textContent = 'Tap the intro to load the mix';
   lcdTrack.textContent = '01/01';
 
   introCard.addEventListener('click', beginPlayback);
   introCard.addEventListener('keydown', function(e){
-    if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); beginPlayback(); }
+    if (e.key === 'Enter' || e.key === ' '){
+      e.preventDefault();
+      beginPlayback();
+    }
   });
 })();
 </script>
